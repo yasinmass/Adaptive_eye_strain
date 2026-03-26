@@ -1,60 +1,77 @@
+import streamlit as st
 import cv2
 import threading
 import time
-import streamlit as st
+
 from eye_tracker import EyeTracker
 from strain_monitor import StrainMonitor
-from notifier import Notifier
 from brightness_control import adjust_brightness
+from dashboard import render_dashboard
 
-# Initialize objects
-eye_tracker = EyeTracker()
-strain_monitor = StrainMonitor()
-notifier = Notifier()
+def main():
+    # Initialize trackers if not present
+    if "tracker" not in st.session_state:
+        st.session_state.tracker = EyeTracker()
+        st.session_state.monitor = StrainMonitor()
+        
+        # Track camera state to fix threading issues
+        st.session_state.camera_started = False
+        st.session_state.last_strain_level = None
 
-# Initialize Streamlit session state
-if "blinks" not in st.session_state:
-    st.session_state.blinks = 0
-if "strain_level" not in st.session_state:
-    st.session_state.strain_level = "Low"
+    # Start the background thread only once to prevent Streamlit rerun multi-threads
+    if not st.session_state.camera_started:
+        st.session_state.camera_started = True
+        
+        def camera_loop():
+            cap = cv2.VideoCapture(0)
+            target_fps = 15
+            frame_time = 1.0 / target_fps
+            
+            while st.session_state.tracker.running:
+                start_t = time.time()
+                
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                    
+                frame = st.session_state.tracker.process_frame(frame)
+                
+                # Check for updates and brightness adjustments
+                if st.session_state.tracker.state == "TRACKING":
+                    strain_level = st.session_state.monitor.update(
+                        st.session_state.tracker.last_blink_detected,
+                        st.session_state.tracker.eye_closed_frames
+                    )
+                    
+                    # Brightness Optimization: Only adjust brightness when strain changes
+                    if strain_level != st.session_state.last_strain_level:
+                        adjust_brightness(strain_level)
+                        st.session_state.last_strain_level = strain_level
+                else:
+                    st.session_state.monitor.start_time = time.time() # Reset clock during calibration
+                
+                cv2.imshow("Adaptive Eye Strain Tracker - Camera", frame)
+                
+                # Safe Thread Shutdown using ESC key
+                if cv2.waitKey(1) & 0xFF == 27: 
+                    st.session_state.tracker.running = False
+                    break
+                    
+                elapsed = time.time() - start_t
+                sleep_time = frame_time - elapsed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+            
+            # Release resources gracefully
+            cap.release()
+            cv2.destroyAllWindows()
+            st.session_state.camera_started = False
+            
+        # Spawn daemon thread so it guarantees exit when Streamlit terminates
+        threading.Thread(target=camera_loop, daemon=True).start()
 
-# Function to run webcam processing
-def run_webcam():
-    cap = cv2.VideoCapture(0)
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    # Pass instances to render the live UI
+    render_dashboard(st.session_state.tracker, st.session_state.monitor)
 
-        blink_detected, total_blinks = eye_tracker.detect_blink(frame)
-        strain_monitor.update(total_blinks)
-        strain_level = strain_monitor.get_strain_level()
-
-        adjust_brightness(strain_level)
-
-        if strain_level == "High":
-            notifier.send_notification("Eye Strain Alert", "High strain detected! Take a break.")
-
-        notifier.check_20_20_20()
-
-        # Update Streamlit session state
-        st.session_state.blinks = total_blinks
-        st.session_state.strain_level = strain_level
-
-        # Optional: show frame in OpenCV window
-        cv2.putText(frame, f"Blink: {total_blinks}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
-        cv2.putText(frame, f"Strain: {strain_level}", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
-        cv2.imshow("Eye Strain Tracker", frame)
-        if cv2.waitKey(1) & 0xFF == 27:
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
-
-# Run webcam in a separate thread
-threading.Thread(target=run_webcam, daemon=True).start()
-
-# Streamlit dashboard
-st.title("💻 Adaptive Eye Strain Dashboard")
-st.metric("Total Blinks", st.session_state.blinks)
-st.metric("Current Strain Level", st.session_state.strain_level)
+if __name__ == "__main__":
+    main()
