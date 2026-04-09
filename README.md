@@ -1,6 +1,6 @@
 # 👁️ Adaptive Eye Strain Protection System
 
-A real-time eye strain detection system that tracks blink patterns, estimates fatigue levels, and provides visual feedback — available in both **desktop (Python)** and **browser-based (Web)** versions.
+A real-time eye strain detection system that tracks blink patterns, estimates fatigue levels, and automatically adjusts screen brightness — available in both a **browser-based (Web)** version and a **headless Python backend** with hardware brightness control.
 
 ---
 
@@ -9,30 +9,28 @@ A real-time eye strain detection system that tracks blink patterns, estimates fa
 * 👁️ Blink detection using Eye Aspect Ratio (EAR)
 * ⏱️ 10-second personalized calibration
 * 📊 Real-time strain monitoring (Low / Medium / High)
-* 📉 Live graph (blink rate & strain trend)
-* 💡 Automatic brightness adjustment (Python version)
-* 🌐 Browser-based version (no installation required)
+* 📉 Live blink-rate graph (Chart.js)
+* 💡 Automatic screen brightness adjustment via Python backend
+* 🌐 Browser-based dashboard (no install required for web version)
+* 🔔 Desktop notifications for high strain events
 
 ---
 
 ## 🧱 Tech Stack
 
-### 🖥 Python Version (Local App)
+### 🌐 Web Dashboard (`web_app/`)
+
+* HTML5 / CSS3 / JavaScript
+* MediaPipe FaceMesh (JS CDN)
+* Chart.js
+
+### 🖥 Python Backend (root)
 
 * Python 3.10+
+* Flask + flask-cors
 * OpenCV
 * MediaPipe
-* NumPy
-* Streamlit
 * screen-brightness-control
-
-### 🌐 Web Version (Deployed)
-
-* HTML5
-* CSS3
-* JavaScript
-* MediaPipe JS (FaceMesh)
-* Chart.js
 
 ---
 
@@ -41,159 +39,146 @@ A real-time eye strain detection system that tracks blink patterns, estimates fa
 ```
 adaptive_eye_strain/
 │
-├── web_app/              # 🌐 Deployable frontend (Vercel)
+├── web_app/              # 🌐 Deployable frontend (Vercel / static)
 │   ├── index.html
 │   ├── style.css
-│   ├── script.js
-│   └── README.md
+│   └── script.js
 │
-├── python_app/           # 🖥 Local CV application
-│   ├── app.py
-│   ├── eye_tracker.py
-│   ├── strain_monitor.py
-│   ├── brightness_control.py
-│   ├── dashboard.py
-│   ├── notifier.py
-│   └── requirements.txt
+├── api.py                # 🔌 Flask API bridge (brightness control)
+├── app.py                # 🖥 Headless Python backend (webcam mode)
+├── eye_tracker.py        # MediaPipe EAR blink detection
+├── strain_monitor.py     # Strain classification logic
+├── brightness_control.py # Hardware brightness controller (threaded)
+├── dashboard.py          # Console dashboard (used by app.py)
+├── notifier.py           # Desktop notification system
+└── requirements.txt
 ```
 
 ---
 
 ## 🌐 Live Demo
 
-After deployment (Vercel):
-
 ```
-https://your-project.vercel.app
+https://adaptive-eye-strain.vercel.app
 ```
 
 ---
 
-## 🧪 Run Web Version (Local)
+## ▶️ Running the Project (Local)
 
+The system uses **two concurrent servers**. Both must run at the same time for brightness control to work.
+
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/yasinmass/Adaptive_eye_strain.git
+cd Adaptive_eye_strain
 ```
+
+### 2. Create & Activate Virtual Environment
+
+```bash
+python -m venv venv
+venv\Scripts\activate        # Windows
+# source venv/bin/activate   # macOS / Linux
+```
+
+### 3. Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Run — Terminal 1: Flask Brightness API (port 5000)
+
+```bash
+python api.py
+```
+
+> This starts the Flask server that receives strain level from the browser and adjusts your screen brightness.
+
+### 5. Run — Terminal 2: Web Dashboard (port 8000)
+
+```bash
 cd web_app
 python -m http.server 8000
 ```
 
-Open:
+### 6. Open the Dashboard
 
 ```
 http://localhost:8000
 ```
 
----
-
-## 🖥 Run Python Version (Local)
-
-### 1. Clone Repository
-
-```
-git clone https://github.com/<your-username>/adaptive_eye_strain.git
-cd adaptive_eye_strain/python_app
-```
+> The browser dashboard will automatically POST the detected strain level to `http://localhost:5000/strain`. No extra steps needed.
 
 ---
 
-### 2. Create Virtual Environment
+## 🖥 Headless Python Mode (Webcam Backend)
 
-```
-python -m venv venv
-venv\Scripts\activate
-```
+If you prefer a fully Python-based workflow (no browser required):
 
----
-
-### 3. Install Dependencies
-
-```
-pip install -r requirements.txt
+```bash
+python app.py
 ```
 
----
-
-## ⚠️ Windows Setup (Important for dlib / build tools)
-
-> Only required if you extend project with dlib or advanced builds
-
-### Install CMake
-
-* Download: https://cmake.org/download/
-* Install and **enable "Add to PATH"**
-
----
-
-### Install Visual Studio Build Tools
-
-* Download: https://visualstudio.microsoft.com/visual-cpp-build-tools/
-* Install:
-
-  * ✔ Desktop development with C++
-
----
-
-## ▶️ Run Application
-
-```
-streamlit run app.py
-```
+This runs eye tracking via OpenCV + MediaPipe directly and adjusts brightness without needing the web dashboard.
 
 ---
 
 ## ⚙️ How It Works
 
-1. Camera captures face in real time
-2. MediaPipe detects eye landmarks
-3. EAR (Eye Aspect Ratio) is computed
-4. Blinks are detected using threshold + frame validation
-5. Strain level is estimated based on:
-
-   * Blink rate
+1. Camera captures face in real time (browser or Python)
+2. MediaPipe FaceMesh detects eye landmarks
+3. EAR (Eye Aspect Ratio) is computed per frame
+4. Blinks are detected using dual-threshold hysteresis
+5. Strain level is classified every second based on:
+   * Blink rate (bpm)
    * Eye closure duration
-   * Screen time
-6. Output is displayed in UI + dashboard
+   * Total screen time
+6. Browser POSTs strain level → Flask API → `brightness_control.py` eases brightness smoothly
 
 ---
 
-## 📊 Strain Logic
+## 📊 Strain & Brightness Mapping
 
-| Condition                        | Result |
-| -------------------------------- | ------ |
-| Normal blink rate                | Low    |
-| Reduced blinking                 | Medium |
-| Very low blinking / long closure | High   |
+| Strain Level | Condition                          | Target Brightness |
+| ------------ | ---------------------------------- | ----------------- |
+| Low          | Normal blink rate (> 15 bpm)       | 80%               |
+| Medium       | Reduced blinking (8–15 bpm)        | 60%               |
+| High         | Very low blinks / long eye closure | 40%               |
 
 ---
 
 ## 🚀 Deployment (Web Version)
 
-* Platform: Vercel
-* Root Directory: `web_app`
-* No backend required
-* Uses browser camera + MediaPipe JS
+* Platform: **Vercel**
+* Root directory: `web_app/`
+* No backend required for the dashboard itself
+* Brightness control requires the local `api.py` running on `localhost:5000`
 
 ---
 
 ## ⚠️ Notes
 
-* Camera requires **HTTPS** (works on Vercel)
-* Works best in good lighting
-* Accuracy depends on face visibility and camera angle
+* Camera access requires **HTTPS** or `localhost`
+* Works best in good, consistent lighting
+* Brightness hardware control requires `screen-brightness-control` (Windows DDC/CI or built-in panel)
 
 ---
 
 ## 🔧 Future Improvements
 
-* Better blink detection (ML-based)
+* ML-based blink detection (beyond EAR)
 * Mobile optimization
-* Notification system in web version
-* User settings (threshold tuning)
+* Persistent session history
+* User-configurable EAR thresholds
 
 ---
 
 ## 👨‍💻 Author
 
-Built as a real-time CV + health monitoring system for hackathons and productivity tools.
+Built as a real-time computer vision + health monitoring system.
 
 ---
 
