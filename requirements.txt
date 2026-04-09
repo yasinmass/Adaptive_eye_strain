@@ -1,3 +1,14 @@
-mediapipe 
+# Core vision
+mediapipe
 opencv-python
 numpy
+
+# Brightness control
+screen-brightness-control
+
+# Desktop notifications
+plyer
+
+# Browser-to-Python brightness API
+flask
+flask-cors

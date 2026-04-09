@@ -39,7 +39,25 @@ let lastBlinkTime = 0;
 let sessionStartTime = null;
 let blinkTimestamps = [];
 let strainLevel = "Low";
+let prevStrainLevel = null;    // tracks last sent level — avoids redundant POSTs
 let isHighStrainSoundPlayed = false;
+
+// ====== Python Brightness API ======
+const BRIGHTNESS_API = 'http://localhost:5000';
+
+/**
+ * POST strain level to the local Python API so it can adjust screen brightness.
+ * Silently ignored if api.py is not running.
+ */
+function postStrainLevel(level) {
+    fetch(`${BRIGHTNESS_API}/strain`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ strain_level: level }),
+    }).catch(() => {
+        // api.py not running — brightness control unavailable, no crash
+    });
+}
 
 // Chart.js Tracking Data Arrays
 let timeLabels = [];
@@ -185,6 +203,12 @@ setInterval(() => {
     }
 
     updateChartData(bpm);
+
+    // POST to Python brightness API only when strain level changes
+    if (strainLevel !== prevStrainLevel) {
+        postStrainLevel(strainLevel);
+        prevStrainLevel = strainLevel;
+    }
 }, 1000);
 
 // ====== Sub-Component: MediaPipe Inference Engine Pipeline ======

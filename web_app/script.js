@@ -47,7 +47,25 @@ let lastBlinkTime    = 0;
 let sessionStartTime = null;
 let blinkTimestamps  = [];
 let strainLevel      = 'Low';
+let prevStrainLevel  = null;   // track last sent level to avoid redundant POSTs
 let isHighStrainPlayed = false;
+
+// ====== Python Brightness API ======
+const BRIGHTNESS_API = 'http://localhost:5000';
+
+/**
+ * POST the current strain level to the Python API.
+ * Silently ignored if the API server is not running.
+ */
+function postStrainLevel(level) {
+    fetch(`${BRIGHTNESS_API}/strain`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ strain_level: level }),
+    }).catch(() => {
+        // API not running — brightness control unavailable, fail silently
+    });
+}
 
 // Chart data buffers
 const timeLabels = [];
@@ -172,6 +190,12 @@ setInterval(() => {
     }
 
     pushChart(bpm);
+
+    // ── POST to Python API only when strain level changes ──
+    if (strainLevel !== prevStrainLevel) {
+        postStrainLevel(strainLevel);
+        prevStrainLevel = strainLevel;
+    }
 }, 1000);
 
 // ====== MediaPipe FaceMesh Results Handler ======

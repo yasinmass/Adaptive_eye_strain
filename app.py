@@ -1,88 +1,138 @@
-import streamlit as st
-import cv2
+"""
+app.py
+------
+Standalone Python backend for the Adaptive Eye Strain Protection System.
+
+Runs headlessly (no GUI window, no Streamlit):
+  - Captures webcam frames
+  - Runs EAR blink detection via MediaPipe
+  - Classifies strain level
+  - Adjusts screen brightness smoothly
+  - Sends desktop notifications
+
+The web dashboard (web_app/) is served separately via:
+  python -m http.server 8000
+
+Press Ctrl+C to quit.
+"""
+
+import logging
 import threading
 import time
 
+import cv2
+
+from brightness_control import adjust_brightness, get_brightness_status, shutdown as brightness_shutdown
+from dashboard import start_console_dashboard
 from eye_tracker import EyeTracker
+from notifier import Notifier
 from strain_monitor import StrainMonitor
-from brightness_control import adjust_brightness
-from dashboard import render_dashboard
 
-# Create a small class to hold thread-specific state
-class ThreadState:
-    def __init__(self):
-        self.last_strain_level = None
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
-def main():
-    # Initialize trackers if not present
-    if "tracker" not in st.session_state:
-        st.session_state.tracker = EyeTracker()
-        st.session_state.monitor = StrainMonitor()
-        st.session_state.thread_state = ThreadState()
-        
-        # Track camera state to fix threading issues
-        st.session_state.camera_started = False
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+TARGET_FPS: int = 15
+FRAME_INTERVAL: float = 1.0 / TARGET_FPS
 
-    # Start the background thread only once to prevent Streamlit rerun multi-threads
-    if not st.session_state.camera_started:
-        st.session_state.camera_started = True
-        
-        # Grab references to pass directly into the thread
-        # This prevents the Thread from raising `ScriptRunContext` or `session_state` KeyError
-        t_tracker = st.session_state.tracker
-        t_monitor = st.session_state.monitor
-        t_state = st.session_state.thread_state
-        
-        def camera_loop(tracker, monitor, state):
-            cap = cv2.VideoCapture(0)
-            target_fps = 15
-            frame_time = 1.0 / target_fps
-            
-            while tracker.running:
-                start_t = time.time()
-                
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                    
-                frame = tracker.process_frame(frame)
-                
-                # Check for updates and brightness adjustments
-                if tracker.state == "TRACKING":
-                    strain_level = monitor.update(
-                        tracker.last_blink_detected,
-                        tracker.eye_closed_frames
+
+def main() -> None:
+    logger.info("Starting Adaptive Eye Strain backend (headless mode).")
+    logger.info("Open your browser at http://localhost:8000 for the dashboard.")
+
+    tracker = EyeTracker()
+    monitor = StrainMonitor()
+    notifier = Notifier()
+
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        logger.error(
+            "Cannot open webcam (index 0). "
+            "Ensure a camera is connected and not in use by another application."
+        )
+        return
+
+    logger.info("Camera opened. Press Ctrl+C to quit.")
+
+    # ---- Start console dashboard in a daemon thread ----------------------
+    dash_thread = threading.Thread(
+        target=start_console_dashboard,
+        args=(tracker, monitor, get_brightness_status),
+        name="ConsoleDashboard",
+        daemon=True,
+    )
+    dash_thread.start()
+
+    last_strain_level: str | None = None
+
+    try:
+        while tracker.running:
+            tick_start = time.time()
+
+            ret, frame = cap.read()
+            if not ret:
+                logger.warning("Frame read failed — skipping.")
+                time.sleep(0.05)
+                continue
+
+            # ---- Eye tracking -----------------------------------------------
+            frame = tracker.process_frame(frame)
+
+            if tracker.state == "TRACKING":
+                strain_level = monitor.update(
+                    blink_detected=tracker.last_blink_detected,
+                    eye_closed_frames=tracker.eye_closed_frames,
+                )
+
+                # Only push to hardware when strain level actually changes
+                if strain_level != last_strain_level:
+                    adjust_brightness(strain_level)
+                    last_strain_level = strain_level
+
+                    brightness = get_brightness_status()
+                    logger.info(
+                        "Strain → %-6s | Blink rate: %3d bpm | "
+                        "Screen time: %.1f min | Brightness: %s%%",
+                        strain_level,
+                        monitor.blink_rate,
+                        monitor.screen_time,
+                        brightness.get("current_brightness", "--")
+                        if brightness.get("supported")
+                        else "N/A",
                     )
-                    
-                    # Brightness Optimization: Only adjust brightness when strain changes
-                    if strain_level != state.last_strain_level:
-                        adjust_brightness(strain_level)
-                        state.last_strain_level = strain_level
-                else:
-                    monitor.start_time = time.time() # Reset clock during calibration
-                
-                cv2.imshow("Adaptive Eye Strain Tracker - Camera", frame)
-                
-                # Safe Thread Shutdown using ESC key
-                if cv2.waitKey(1) & 0xFF == 27: 
-                    tracker.running = False
-                    break
-                    
-                elapsed = time.time() - start_t
-                sleep_time = frame_time - elapsed
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-            
-            # Release resources gracefully
-            cap.release()
-            cv2.destroyAllWindows()
-            
-        # Spawn daemon thread so it guarantees exit when Streamlit terminates
-        # Pass the variables directly into args to solve the background context scope issue
-        threading.Thread(target=camera_loop, args=(t_tracker, t_monitor, t_state), daemon=True).start()
 
-    # Pass instances to render the live UI
-    render_dashboard(st.session_state.tracker, st.session_state.monitor)
+                # Notifications (each has internal cooldown)
+                notifier.check_high_strain(strain_level)
+                notifier.check_20_20_20()
+
+            else:
+                # Reset monitor during calibration so screen-time is accurate
+                monitor.start_time = time.time()
+
+            # ---- FPS cap ----------------------------------------------------
+            elapsed = time.time() - tick_start
+            sleep_for = FRAME_INTERVAL - elapsed
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+
+    except KeyboardInterrupt:
+        logger.info("Ctrl+C received — shutting down gracefully.")
+
+    finally:
+        tracker.running = False
+        cap.release()
+        brightness_shutdown()
+        logger.info("Resources released. Goodbye.")
+
 
 if __name__ == "__main__":
     main()
